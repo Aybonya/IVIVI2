@@ -16,6 +16,15 @@ export type CityMarker = {
   };
 };
 
+export type RoutePoint = {
+  title: string;
+  subtitle: string;
+  coordinate: {
+    latitude: number;
+    longitude: number;
+  };
+};
+
 export const CITY_REGION = {
   latitude: 43.2382,
   longitude: 76.8897,
@@ -24,6 +33,24 @@ export const CITY_REGION = {
 };
 
 export const FILTER_OPTIONS: InsightCategory[] = ['Traffic', 'Safety', 'Resources'];
+
+export const ROUTE_ORIGIN: RoutePoint = {
+  title: 'Central Almaty',
+  subtitle: 'Abay Avenue corridor',
+  coordinate: {
+    latitude: 43.238949,
+    longitude: 76.889709,
+  },
+};
+
+export const ROUTE_DESTINATION: RoutePoint = {
+  title: 'Alatau District',
+  subtitle: 'North-west civic cluster',
+  coordinate: {
+    latitude: 43.266145,
+    longitude: 76.822634,
+  },
+};
 
 export const CITY_MARKERS: CityMarker[] = [
   {

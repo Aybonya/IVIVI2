@@ -45,6 +45,12 @@ npm run android
 npm run web
 ```
 
+## Firebase setup
+
+1. Copy `.env.example` to `.env`.
+2. Paste your Firebase web app config values into the `EXPO_PUBLIC_FIREBASE_*` variables.
+3. Restart Expo after editing env variables.
+
 ## Notes
 
 - `node_modules` and `.expo` should not be committed.

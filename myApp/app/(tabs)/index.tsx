@@ -1,440 +1,427 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
-} from 'react-native';
-import MapView, { Circle, Marker, Polygon } from 'react-native-maps';
+import { Keyboard, Pressable, StyleSheet, View } from 'react-native';
+import MapView, { Circle, MapPressEvent, Marker, Polyline } from 'react-native-maps';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DestinationSearchSheet, type SheetState } from '@/components/map/destination-search-sheet';
 import {
-  CITY_MARKERS,
-  CITY_REGION,
-  DANGER_ZONE,
-  FILTER_OPTIONS,
-  SERVICE_AREA,
-  type CityMarker,
-  type InsightCategory,
-  type InsightStatus,
-} from '@/components/map/map-data';
-import { StatusBadge } from '@/components/map/status-badge';
+  DESTINATION_SUGGESTIONS,
+  type DestinationSuggestion,
+  type RouteMode,
+  type TransportMode,
+} from '@/components/map/mobility-data';
+import { OverlayControls } from '@/components/map/overlay-controls';
+import { CITY_REGION } from '@/components/map/map-data';
 import { ThemedText } from '@/components/themed-text';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useCurrentLocation } from '@/hooks/use-current-location';
+import {
+  POLLUTION_HEATMAP_LAYERS,
+  SAFETY_HEATMAP_LAYERS,
+} from '@/lib/overlay-simulator';
+import { resolvePlaceSuggestion, searchPlaces } from '@/lib/place-search';
+import {
+  buildMobilityRouteOptions,
+  type MobilityRouteOption,
+} from '@/lib/mobility-routing';
 
-const categoryStyles: Record<
-  InsightCategory,
-  { color: string; soft: string; icon: keyof typeof Ionicons.glyphMap }
-> = {
-  Traffic: {
-    color: '#FF7A45',
-    soft: 'rgba(255, 122, 69, 0.15)',
-    icon: 'git-network-outline',
-  },
-  Safety: {
-    color: '#30C48D',
-    soft: 'rgba(48, 196, 141, 0.15)',
-    icon: 'shield-checkmark-outline',
-  },
-  Resources: {
-    color: '#4DA3FF',
-    soft: 'rgba(77, 163, 255, 0.15)',
-    icon: 'flash-outline',
-  },
+const palette = {
+  screen: '#EEF3F8',
+  panel: 'rgba(255,255,255,0.92)',
+  border: 'rgba(18, 34, 58, 0.10)',
+  text: '#102133',
+  softText: '#6D7C92',
 };
 
-function getStatusTone(status: InsightStatus): 'safe' | 'moderate' | 'alert' {
-  if (status === 'Safe') {
-    return 'safe';
-  }
-
-  if (status === 'Moderate') {
-    return 'moderate';
-  }
-
-  return 'alert';
-}
-
-function FilterChip({
-  label,
-  active,
-  onPress,
-}: {
-  label: InsightCategory;
-  active: boolean;
-  onPress: () => void;
-}) {
-  const style = categoryStyles[label];
-
+function DestinationPin() {
   return (
-    <Pressable
-      onPress={onPress}
-      style={[
-        styles.filterChip,
-        active && {
-          backgroundColor: style.soft,
-          borderColor: style.color,
-        },
-      ]}>
-      <Ionicons name={style.icon} size={13} color={active ? style.color : '#8F9BB5'} />
-      <ThemedText style={[styles.filterChipText, active && { color: '#F7F9FD' }]}>
-        {label}
-      </ThemedText>
-    </Pressable>
-  );
-}
-
-function MiniMarker({
-  marker,
-  selected,
-}: {
-  marker: CityMarker;
-  selected: boolean;
-}) {
-  const palette = categoryStyles[marker.category];
-
-  return (
-    <View
-      style={[
-        styles.markerWrap,
-        {
-          backgroundColor: palette.color,
-          borderColor: selected ? '#FFFFFF' : 'rgba(255,255,255,0.58)',
-          transform: [{ scale: selected ? 1.08 : 1 }],
-        },
-      ]}>
-      <Ionicons name={palette.icon} size={10} color="#FFFFFF" />
+    <View style={styles.pinWrap}>
+      <View style={styles.pinCore}>
+        <Ionicons name="flag" size={16} color="#FFFFFF" />
+      </View>
+      <View style={styles.pinLabel}>
+        <ThemedText style={styles.pinLabelText}>Destination</ThemedText>
+      </View>
     </View>
   );
 }
 
 export default function SmartCityMapScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const isDark = colorScheme === 'dark';
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView | null>(null);
-  const [activeFilters, setActiveFilters] = useState<InsightCategory[]>(FILTER_OPTIONS);
-  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
-  const [isTopUIVisible, setIsTopUIVisible] = useState(false);
-  const [isBottomExpanded, setIsBottomExpanded] = useState(false);
-  const [isFocusMode, setIsFocusMode] = useState(false);
+  const hasCenteredOnUser = useRef(false);
+  const { location, permissionGranted, isLoading: isLocating, errorMessage: locationError } =
+    useCurrentLocation();
 
-  const visibleMarkers = useMemo(
-    () => CITY_MARKERS.filter((marker) => activeFilters.includes(marker.category)),
-    [activeFilters]
-  );
-
-  const selectedMarker =
-    visibleMarkers.find((marker) => marker.id === selectedMarkerId) ??
-    CITY_MARKERS.find((marker) => marker.id === selectedMarkerId) ??
-    null;
+  const [query, setQuery] = useState('');
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [isSheetCollapsed, setIsSheetCollapsed] = useState(false);
+  const [searchResults, setSearchResults] = useState<DestinationSuggestion[]>([]);
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
+  const [selectedDestination, setSelectedDestination] = useState<DestinationSuggestion | null>(null);
+  const [routeOptions, setRouteOptions] = useState<MobilityRouteOption[]>([]);
+  const [selectedMode, setSelectedMode] = useState<RouteMode | null>(null);
+  const [selectedTransport, setSelectedTransport] = useState<TransportMode>('Driving');
+  const [isRouting, setIsRouting] = useState(false);
+  const [routeError, setRouteError] = useState('');
+  const [overlays, setOverlays] = useState({
+    eco: false,
+    safe: false,
+  });
 
   useEffect(() => {
-    if (selectedMarkerId && !visibleMarkers.some((marker) => marker.id === selectedMarkerId)) {
-      setSelectedMarkerId(null);
-      setIsBottomExpanded(false);
+    if (!permissionGranted || hasCenteredOnUser.current) {
+      return;
     }
-  }, [selectedMarkerId, visibleMarkers]);
 
-  const toggleFilter = (filter: InsightCategory) => {
-    setActiveFilters((current) => {
-      if (current.includes(filter)) {
-        if (current.length === 1) {
-          return current;
+    hasCenteredOnUser.current = true;
+    mapRef.current?.animateToRegion(
+      {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        latitudeDelta: 0.045,
+        longitudeDelta: 0.045,
+      },
+      900
+    );
+  }, [location, permissionGranted]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      if (query.trim().length < 2) {
+        setSearchResults(DESTINATION_SUGGESTIONS.slice(0, 5));
+        return;
+      }
+
+      setIsSearchingPlaces(true);
+
+      try {
+        const results = await searchPlaces(query, location);
+
+        if (!cancelled) {
+          setSearchResults(results.length ? results : DESTINATION_SUGGESTIONS.slice(0, 5));
         }
-
-        return current.filter((item) => item !== filter);
+      } catch {
+        if (!cancelled) {
+          setSearchResults(DESTINATION_SUGGESTIONS.slice(0, 5));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSearchingPlaces(false);
+        }
       }
+    }, 260);
 
-      return [...current, filter];
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [location, query]);
+
+  const activeRoute =
+    routeOptions.find((item) => item.mode === selectedMode) ?? routeOptions[0] ?? null;
+
+  const sheetState: SheetState = useMemo(() => {
+    if (isSheetCollapsed) {
+      return 'collapsed';
+    }
+
+    if (routeOptions.length && selectedMode) {
+      return 'route';
+    }
+
+    if (selectedDestination) {
+      return 'destination';
+    }
+
+    if (isSearchExpanded || query.length > 0) {
+      return 'search';
+    }
+
+    return 'collapsed';
+  }, [isSearchExpanded, isSheetCollapsed, query.length, routeOptions.length, selectedDestination, selectedMode]);
+
+  const combinedError = routeError || locationError;
+
+  const fitRoute = (destination: DestinationSuggestion, path: { latitude: number; longitude: number }[]) => {
+    if (!destination.coordinate) {
+      return;
+    }
+
+    mapRef.current?.fitToCoordinates([location, destination.coordinate, ...path], {
+      edgePadding: {
+        top: 120,
+        right: 40,
+        bottom: 230,
+        left: 40,
+      },
+      animated: true,
     });
   };
 
-  const centerMap = () => {
-    mapRef.current?.animateToRegion(CITY_REGION, 900);
+  const setDestination = (destination: DestinationSuggestion) => {
+    setSelectedDestination(destination);
+    setQuery(destination.title);
+    setRouteOptions([]);
+    setSelectedMode(null);
+    setSelectedTransport('Driving');
+    setRouteError('');
+    setIsSearchExpanded(false);
+    setIsSheetCollapsed(false);
   };
 
-  const handleMapPress = () => {
-    setIsFocusMode(true);
-    setIsTopUIVisible(false);
-    setIsBottomExpanded(false);
-  };
+  const handleMapPress = (event: MapPressEvent) => {
+    Keyboard.dismiss();
 
-  const handleMarkerPress = (marker: CityMarker) => {
-    setSelectedMarkerId(marker.id);
-    setIsBottomExpanded(true);
-    setIsTopUIVisible(false);
-    setIsFocusMode(false);
-  };
-
-  const toggleFocusMode = () => {
-    setIsFocusMode((current) => {
-      const next = !current;
-
-      if (next) {
-        setIsTopUIVisible(false);
-        setIsBottomExpanded(false);
-      }
-
-      return next;
+    setDestination({
+      id: `tap-${event.nativeEvent.coordinate.latitude}-${event.nativeEvent.coordinate.longitude}`,
+      title: 'Pinned destination',
+      subtitle: 'Selected on map',
+      hint: 'Map pin',
+      coordinate: event.nativeEvent.coordinate,
     });
   };
 
-  const toggleTopUI = () => {
-    setIsTopUIVisible((current) => !current);
-    setIsFocusMode(false);
-  };
+  const handleSelectSuggestion = async (suggestion: DestinationSuggestion) => {
+    setSelectedDestination(null);
+    setRouteOptions([]);
+    setSelectedMode(null);
+    setRouteError('');
+    setIsSearchingPlaces(true);
 
-  const expandBottomPanel = () => {
-    if (selectedMarker) {
-      setIsBottomExpanded(true);
-      setIsFocusMode(false);
+    try {
+      const resolved = await resolvePlaceSuggestion(suggestion);
+      setDestination(resolved);
+    } catch (error) {
+      setRouteError(error instanceof Error ? error.message : 'Unable to open this place.');
+    } finally {
+      setIsSearchingPlaces(false);
     }
   };
 
-  const collapseBottomPanel = () => {
-    setIsBottomExpanded(false);
+  const handleBuildRoute = async () => {
+    if (!selectedDestination?.coordinate) {
+      return;
+    }
+
+    setIsRouting(true);
+    setRouteError('');
+
+    try {
+      const options = await buildMobilityRouteOptions(
+        location,
+        selectedDestination,
+        selectedTransport
+      );
+      const defaultMode = options[0]?.mode ?? null;
+      setRouteOptions(options);
+      setSelectedMode(defaultMode);
+      setIsSheetCollapsed(false);
+      fitRoute(selectedDestination, options[0]?.path ?? []);
+    } catch (error) {
+      setRouteError(error instanceof Error ? error.message : 'Unable to build route right now.');
+    } finally {
+      setIsRouting(false);
+    }
   };
 
-  const showTopContent = isTopUIVisible && !isFocusMode;
-  const showBottomExpanded = !!selectedMarker && isBottomExpanded && !isFocusMode;
-  const showBottomCollapsed = !!selectedMarker && !isBottomExpanded && !isFocusMode;
-  const mapType = Platform.OS === 'ios' ? (isDark ? 'mutedStandard' : 'standard') : 'standard';
-  const palette = isDark
-    ? {
-        screen: '#07101C',
-        shade: 'rgba(4, 10, 18, 0.12)',
-        panel: 'rgba(8, 17, 31, 0.82)',
-        panelSolid: 'rgba(7, 13, 24, 0.94)',
-        card: 'rgba(255,255,255,0.05)',
-        border: 'rgba(255,255,255,0.08)',
-        text: '#F7F9FD',
-        muted: '#8F9BB5',
-        softText: '#A7B0C7',
-        dot: '#56D6A2',
-        badge: 'rgba(93, 106, 255, 0.18)',
-        badgeText: '#9AB0FF',
+  const handleSelectMode = (mode: RouteMode) => {
+    setSelectedMode(mode);
+    setIsSheetCollapsed(false);
+
+    const nextRoute = routeOptions.find((item) => item.mode === mode);
+
+    if (nextRoute && selectedDestination) {
+      fitRoute(selectedDestination, nextRoute.path);
+    }
+  };
+
+  const handleSelectTransport = async (transportMode: TransportMode) => {
+    setSelectedTransport(transportMode);
+    setRouteError('');
+
+    if (!selectedDestination?.coordinate) {
+      return;
+    }
+
+    setIsRouting(true);
+
+    try {
+      const options = await buildMobilityRouteOptions(location, selectedDestination, transportMode);
+      const defaultMode = options[0]?.mode ?? null;
+      setRouteOptions(options);
+      setSelectedMode(defaultMode);
+
+      if (options[0]) {
+        fitRoute(selectedDestination, options[0].path);
       }
-    : {
-        screen: '#EEF3F9',
-        shade: 'rgba(255, 255, 255, 0.00)',
-        panel: 'rgba(255, 255, 255, 0.92)',
-        panelSolid: 'rgba(255, 255, 255, 0.96)',
-        card: 'rgba(13, 24, 40, 0.05)',
-        border: 'rgba(16, 29, 46, 0.10)',
-        text: '#112033',
-        muted: '#6C7B91',
-        softText: '#6C7B91',
-        dot: '#1FA971',
-        badge: 'rgba(54, 93, 255, 0.10)',
-        badgeText: '#365DFF',
-      };
+    } catch (error) {
+      setRouteError(
+        error instanceof Error ? error.message : 'Unable to switch transport mode right now.'
+      );
+    } finally {
+      setIsRouting(false);
+    }
+  };
+
+  const handleClear = () => {
+    setQuery('');
+    setSelectedDestination(null);
+    setRouteOptions([]);
+    setSelectedMode(null);
+    setRouteError('');
+    setIsSearchExpanded(true);
+    setIsSheetCollapsed(false);
+    setSearchResults(DESTINATION_SUGGESTIONS.slice(0, 5));
+  };
 
   return (
-    <View style={[styles.screen, { backgroundColor: palette.screen }]}>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
+    <View style={styles.screen}>
+      <StatusBar style="dark" />
 
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFill}
         initialRegion={CITY_REGION}
-        mapType={mapType}
+        mapType="standard"
         showsCompass={false}
+        showsIndoors={false}
         showsBuildings={false}
         showsPointsOfInterest={false}
-        showsIndoors={false}
-        toolbarEnabled={false}
-        pitchEnabled
         rotateEnabled={false}
+        toolbarEnabled={false}
+        showsUserLocation
         onPress={handleMapPress}>
-        {activeFilters.includes('Safety') ? (
-          <Circle
-            center={DANGER_ZONE.center}
-            radius={DANGER_ZONE.radius}
-            fillColor="rgba(255, 106, 106, 0.16)"
-            strokeColor="rgba(255, 106, 106, 0.45)"
-            strokeWidth={2}
-          />
-        ) : null}
+        {overlays.eco
+          ? POLLUTION_HEATMAP_LAYERS.map((layer) => (
+              <Circle
+                key={layer.id}
+                center={layer.center}
+                radius={layer.radius}
+                fillColor={layer.fillColor}
+                strokeColor={layer.strokeColor}
+                strokeWidth={1}
+              />
+            ))
+          : null}
 
-        {activeFilters.includes('Resources') ? (
-          <Polygon
-            coordinates={SERVICE_AREA}
-            fillColor="rgba(77, 163, 255, 0.12)"
-            strokeColor="rgba(77, 163, 255, 0.48)"
-            strokeWidth={2}
-          />
-        ) : null}
+        {overlays.safe
+          ? SAFETY_HEATMAP_LAYERS.map((layer) => (
+              <Circle
+                key={layer.id}
+                center={layer.center}
+                radius={layer.radius}
+                fillColor={layer.fillColor}
+                strokeColor={layer.strokeColor}
+                strokeWidth={1}
+              />
+            ))
+          : null}
 
-        {visibleMarkers.map((marker) => (
-          <Marker
-            key={marker.id}
-            coordinate={marker.coordinate}
-            onPress={() => handleMarkerPress(marker)}
-            tracksViewChanges={false}>
-            <MiniMarker marker={marker} selected={marker.id === selectedMarker?.id} />
+        {selectedDestination?.coordinate ? (
+          <Marker coordinate={selectedDestination.coordinate} tracksViewChanges={false}>
+            <DestinationPin />
           </Marker>
-        ))}
+        ) : null}
+
+        {activeRoute?.path.length ? (
+          <Polyline
+            coordinates={activeRoute.path}
+            strokeColor={activeRoute.strokeColor}
+            strokeWidth={5}
+            lineCap="round"
+            lineJoin="round"
+          />
+        ) : null}
       </MapView>
 
-      <View pointerEvents="none" style={[styles.mapShade, { backgroundColor: palette.shade }]} />
-
       <SafeAreaView style={styles.overlay} pointerEvents="box-none">
-        <View style={[styles.topContainer, { paddingTop: insets.top + 6 }]}>
-          <View style={styles.compactBar}>
-            <Pressable
-              style={[styles.compactInfo, { backgroundColor: palette.panel, borderColor: palette.border }]}
-              onPress={toggleTopUI}>
-              <View style={[styles.compactDot, { backgroundColor: palette.dot }]} />
-              <View style={styles.compactTextWrap}>
-                <ThemedText style={[styles.compactLabel, { color: palette.muted }]}>Live urban layer</ThemedText>
-                <ThemedText style={[styles.compactTitle, { color: palette.text }]}>Almaty Grid</ThemedText>
-              </View>
-            </Pressable>
-
-            <View style={styles.compactActions}>
-              <Pressable
-                style={[styles.smallRoundButton, { backgroundColor: palette.panel, borderColor: palette.border }]}
-                onPress={toggleTopUI}>
-                <Ionicons
-                  name={showTopContent ? 'chevron-up' : 'options-outline'}
-                  size={18}
-                  color={palette.text}
-                />
-              </Pressable>
-              <Pressable
-                style={[styles.smallRoundButton, { backgroundColor: palette.panel, borderColor: palette.border }]}
-                onPress={centerMap}>
-                <Ionicons name="locate" size={18} color={palette.text} />
-              </Pressable>
-            </View>
-          </View>
-
-          {showTopContent ? (
-            <View style={[styles.topSheet, { backgroundColor: palette.panel, borderColor: palette.border }]}>
-              <View style={[styles.searchBar, { backgroundColor: palette.card, borderColor: palette.border }]}>
-                <Ionicons name="search-outline" size={18} color={palette.softText} />
-                <TextInput
-                  editable={false}
-                  placeholder="Search districts, hubs, and incidents"
-                  placeholderTextColor={palette.softText}
-                  style={[styles.searchInput, { color: palette.text }]}
-                />
-                <View style={[styles.searchBadge, { backgroundColor: palette.badge }]}>
-                  <ThemedText style={[styles.searchBadgeText, { color: palette.badgeText }]}>Live</ThemedText>
-                </View>
-              </View>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.filterRow}>
-                {FILTER_OPTIONS.map((filter) => (
-                  <FilterChip
-                    key={filter}
-                    label={filter}
-                    active={activeFilters.includes(filter)}
-                    onPress={() => toggleFilter(filter)}
-                  />
-                ))}
-              </ScrollView>
-
-              <View style={styles.summaryRow}>
-                <View>
-                  <ThemedText style={[styles.summaryLabel, { color: palette.muted }]}>Urban intelligence</ThemedText>
-                  <ThemedText style={[styles.summaryTitle, { color: palette.text }]}>Almaty Live Grid</ThemedText>
-                </View>
-                <View style={[styles.summaryMetric, { backgroundColor: palette.card }]}>
-                  <ThemedText style={[styles.summaryMetricValue, { color: palette.text }]}>{visibleMarkers.length}</ThemedText>
-                  <ThemedText style={[styles.summaryMetricLabel, { color: palette.muted }]}>signals</ThemedText>
-                </View>
-              </View>
-            </View>
-          ) : null}
-        </View>
-
-        <View style={[styles.floatingActions, { bottom: insets.bottom + 138 }]}>
-          <Pressable
-            style={[styles.focusButton, { backgroundColor: palette.panel, borderColor: palette.border }]}
-            onPress={toggleFocusMode}>
-            <Ionicons
-              name={isFocusMode ? 'scan-outline' : 'eye-off-outline'}
-              size={16}
-              color={palette.text}
-            />
-            <ThemedText style={[styles.focusButtonText, { color: palette.text }]}>
-              {isFocusMode ? 'Expand UI' : 'Focus Map'}
+        <View style={[styles.headerRow, { paddingTop: insets.top + 2 }]}>
+          <View style={styles.headerPill}>
+            <Ionicons name="navigate-outline" size={16} color="#2D7BFF" />
+            <ThemedText style={styles.headerText}>
+              {permissionGranted ? 'Live GPS origin' : 'Almaty fallback origin'}
             </ThemedText>
-          </Pressable>
+          </View>
+
+          <View style={styles.actionButtons}>
+            <Pressable
+              style={styles.actionButton}
+              onPress={() => {
+                setIsSearchExpanded(true);
+                setIsSheetCollapsed(false);
+                setRouteOptions([]);
+                setSelectedMode(null);
+                setSelectedTransport('Driving');
+                setSelectedDestination(null);
+                setQuery('');
+              }}>
+              <Ionicons name="search-outline" size={18} color={palette.text} />
+            </Pressable>
+            <Pressable
+              style={styles.actionButton}
+              onPress={() =>
+                mapRef.current?.animateToRegion(
+                  {
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    latitudeDelta: 0.045,
+                    longitudeDelta: 0.045,
+                  },
+                  900
+                )
+              }>
+              <Ionicons name="locate-outline" size={18} color={palette.text} />
+            </Pressable>
+          </View>
         </View>
 
-        {showBottomExpanded ? (
-          <View
-            style={[
-              styles.bottomPanel,
-              { paddingBottom: Math.max(insets.bottom, 16), backgroundColor: palette.panelSolid, borderColor: palette.border },
-            ]}>
-            <Pressable style={styles.grabberPress} onPress={collapseBottomPanel}>
-              <View style={[styles.grabber, { backgroundColor: isDark ? 'rgba(255,255,255,0.16)' : 'rgba(17,32,51,0.16)' }]} />
-            </Pressable>
+        <View style={[styles.sideControls, { bottom: insets.bottom + 122 }]}>
+          <OverlayControls
+            values={overlays}
+            onToggle={(key) =>
+              setOverlays((current) => ({
+                ...current,
+                [key]: !current[key],
+              }))
+            }
+          />
+        </View>
 
-            <View style={styles.bottomHeader}>
-              <View style={styles.bottomTitleWrap}>
-                <ThemedText style={[styles.bottomEyebrow, { color: palette.muted }]}>{selectedMarker.category}</ThemedText>
-                <ThemedText style={[styles.bottomTitle, { color: palette.text }]}>{selectedMarker.title}</ThemedText>
-              </View>
-              <StatusBadge
-                label={selectedMarker.status}
-                tone={getStatusTone(selectedMarker.status)}
-              />
-            </View>
-
-            <ThemedText style={[styles.bottomDescription, { color: palette.softText }]}>{selectedMarker.description}</ThemedText>
-
-            <View style={styles.metricRow}>
-              <View style={[styles.metricCard, { backgroundColor: palette.card }]}>
-                <ThemedText style={[styles.metricLabel, { color: palette.muted }]}>Response note</ThemedText>
-                <ThemedText style={[styles.metricValue, { color: palette.text }]}>{selectedMarker.detail}</ThemedText>
-              </View>
-              <View style={[styles.metricCard, { backgroundColor: palette.card }]}>
-                <ThemedText style={[styles.metricLabel, { color: palette.muted }]}>Quick signal</ThemedText>
-                <ThemedText style={[styles.metricValue, { color: palette.text }]}>{selectedMarker.eta}</ThemedText>
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        {showBottomCollapsed ? (
-          <Pressable
-            style={[
-              styles.bottomMini,
-              { bottom: Math.max(insets.bottom, 16), backgroundColor: palette.panelSolid, borderColor: palette.border },
-            ]}
-            onPress={expandBottomPanel}>
-            <View style={styles.bottomMiniLeft}>
-              <View
-                style={[
-                  styles.bottomMiniAccent,
-                  { backgroundColor: categoryStyles[selectedMarker.category].color },
-                ]}
-              />
-              <View style={styles.bottomMiniTextWrap}>
-                <ThemedText style={[styles.bottomMiniLabel, { color: palette.muted }]}>{selectedMarker.category}</ThemedText>
-                <ThemedText style={[styles.bottomMiniTitle, { color: palette.text }]}>{selectedMarker.title}</ThemedText>
-              </View>
-            </View>
-            <View style={styles.bottomMiniRight}>
-              <StatusBadge
-                label={selectedMarker.status}
-                tone={getStatusTone(selectedMarker.status)}
-              />
-            </View>
-          </Pressable>
-        ) : null}
+        <DestinationSearchSheet
+          state={sheetState}
+          isCollapsed={isSheetCollapsed}
+          query={query}
+          onQueryChange={(value) => {
+            setQuery(value);
+            setIsSearchExpanded(true);
+            setIsSheetCollapsed(false);
+            setSelectedDestination(null);
+            setRouteOptions([]);
+            setSelectedMode(null);
+            setSelectedTransport('Driving');
+            setRouteError('');
+          }}
+          onFocus={() => {
+            setIsSearchExpanded(true);
+            setIsSheetCollapsed(false);
+          }}
+          onClear={handleClear}
+          onToggleCollapse={() => setIsSheetCollapsed((current) => !current)}
+          suggestions={searchResults}
+          selectedDestination={selectedDestination}
+          selectedTransport={selectedTransport}
+          onSelectSuggestion={(destination) => void handleSelectSuggestion(destination)}
+          onSelectTransport={(mode) => void handleSelectTransport(mode)}
+          onBuildRoute={() => void handleBuildRoute()}
+          routeOptions={routeOptions}
+          selectedMode={selectedMode}
+          onSelectMode={handleSelectMode}
+          isLoading={isRouting || isSearchingPlaces || isLocating}
+          errorMessage={combinedError}
+        />
       </SafeAreaView>
     </View>
   );
@@ -443,352 +430,79 @@ export default function SmartCityMapScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#07101C',
-  },
-  mapShade: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(4, 10, 18, 0.08)',
+    backgroundColor: palette.screen,
   },
   overlay: {
     flex: 1,
     justifyContent: 'space-between',
   },
-  topContainer: {
+  headerRow: {
     paddingHorizontal: 14,
-    gap: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  compactBar: {
+  headerPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-  },
-  compactInfo: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(8, 17, 31, 0.76)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  compactDot: {
-    width: 10,
-    height: 10,
+    gap: 8,
     borderRadius: 999,
-    backgroundColor: '#56D6A2',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: palette.panel,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
-  compactTextWrap: {
-    flex: 1,
-  },
-  compactLabel: {
-    color: '#8E9AB4',
-    fontSize: 11,
-    lineHeight: 13,
+  headerText: {
+    color: palette.text,
+    fontSize: 13,
+    lineHeight: 16,
     fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.9,
   },
-  compactTitle: {
-    color: '#F7F9FD',
-    fontSize: 16,
-    lineHeight: 18,
-    fontWeight: '800',
-    marginTop: 3,
-  },
-  compactActions: {
+  actionButtons: {
     flexDirection: 'row',
     gap: 8,
   },
-  smallRoundButton: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+  actionButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(8, 17, 31, 0.78)',
+    backgroundColor: palette.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: palette.border,
   },
-  topSheet: {
-    borderRadius: 28,
-    padding: 14,
-    gap: 12,
-    backgroundColor: 'rgba(8, 17, 31, 0.86)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    shadowColor: '#000000',
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
-    elevation: 10,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.07)',
-  },
-  searchInput: {
-    flex: 1,
-    color: '#F8FAFF',
-    fontSize: 15,
-  },
-  searchBadge: {
-    borderRadius: 999,
-    backgroundColor: 'rgba(93, 106, 255, 0.18)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  searchBadgeText: {
-    color: '#9AB0FF',
-    fontSize: 12,
-    lineHeight: 14,
-    fontWeight: '700',
-  },
-  filterRow: {
-    gap: 8,
-    paddingRight: 8,
-  },
-  filterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  filterChipText: {
-    color: '#A1A9BE',
-    fontSize: 13,
-    lineHeight: 15,
-    fontWeight: '700',
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  summaryLabel: {
-    color: '#8F9BB7',
-    fontSize: 12,
-    lineHeight: 14,
-    fontWeight: '600',
-  },
-  summaryTitle: {
-    color: '#F8FAFF',
-    fontSize: 18,
-    lineHeight: 22,
-    fontWeight: '800',
-    marginTop: 4,
-  },
-  summaryMetric: {
-    minWidth: 72,
-    borderRadius: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  summaryMetricValue: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    lineHeight: 22,
-    fontWeight: '800',
-  },
-  summaryMetricLabel: {
-    color: '#98A2BD',
-    fontSize: 11,
-    lineHeight: 13,
-    marginTop: 3,
-  },
-  floatingActions: {
+  sideControls: {
     position: 'absolute',
     right: 14,
   },
-  focusButton: {
-    flexDirection: 'row',
+  pinWrap: {
     alignItems: 'center',
-    gap: 8,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(8, 17, 31, 0.82)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    shadowColor: '#000000',
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-    elevation: 10,
   },
-  focusButtonText: {
-    color: '#F7F9FD',
-    fontSize: 13,
-    lineHeight: 15,
-    fontWeight: '700',
-  },
-  markerWrap: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+  pinCore: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#0FBF84',
     borderWidth: 2,
-    shadowColor: '#000000',
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    elevation: 5,
+    borderColor: 'rgba(255,255,255,0.86)',
   },
-  bottomPanel: {
-    marginHorizontal: 14,
-    marginBottom: 12,
-    borderRadius: 28,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    backgroundColor: 'rgba(7, 13, 24, 0.94)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    shadowColor: '#000000',
-    shadowOpacity: 0.28,
-    shadowRadius: 18,
-    shadowOffset: {
-      width: 0,
-      height: 10,
-    },
-    elevation: 14,
-  },
-  grabberPress: {
-    alignItems: 'center',
-    paddingBottom: 8,
-  },
-  grabber: {
-    width: 42,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.16)',
-  },
-  bottomHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  bottomTitleWrap: {
-    flex: 1,
-  },
-  bottomEyebrow: {
-    color: '#8B96B1',
-    fontSize: 12,
-    lineHeight: 14,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  bottomTitle: {
-    color: '#F8FAFF',
-    fontSize: 24,
-    lineHeight: 28,
-    fontWeight: '800',
+  pinLabel: {
     marginTop: 6,
-  },
-  bottomDescription: {
-    color: '#B4BED4',
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 14,
-  },
-  metricRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
-  },
-  metricCard: {
-    flex: 1,
-    borderRadius: 22,
-    padding: 14,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  metricLabel: {
-    color: '#8F9BB7',
-    fontSize: 12,
-    lineHeight: 14,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  metricValue: {
-    color: '#F5F7FB',
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '600',
-    marginTop: 8,
-  },
-  bottomMini: {
-    marginHorizontal: 14,
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(7, 13, 24, 0.92)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  bottomMiniLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  bottomMiniAccent: {
-    width: 10,
-    height: 34,
     borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderWidth: 1,
+    borderColor: 'rgba(18, 34, 58, 0.10)',
   },
-  bottomMiniTextWrap: {
-    flex: 1,
-  },
-  bottomMiniLabel: {
-    color: '#8B96B1',
+  pinLabelText: {
+    color: palette.text,
     fontSize: 11,
     lineHeight: 13,
     fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  bottomMiniTitle: {
-    color: '#F7F9FD',
-    fontSize: 16,
-    lineHeight: 18,
-    fontWeight: '800',
-    marginTop: 4,
-  },
-  bottomMiniRight: {
-    alignItems: 'flex-end',
   },
 });
