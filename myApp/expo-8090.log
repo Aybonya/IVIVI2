@@ -1,0 +1,35 @@
+Starting project at C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp
+React Compiler enabled
+Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.
+Starting Metro Bundler
+Waiting on http://localhost:8090
+Logs for your project will appear below.
+Web node_modules\expo-router\entry.js ▓░░░░░░░░░░░░░░░ 10.5% ( 77/238)
+λ node_modules\expo-router\node\render.js ▓▓▓░░░░░░░░░░░░░ 18.8% (145/334)
+λ Bundling failed 3019ms node_modules\expo-router\node\render.js (1404 modules)
+Web Bundling failed 3026ms node_modules\expo-router\entry.js (1043 modules)
+
+Metro error: Importing native-only module "react-native/Libraries/Utilities/codegenNativeCommands" on web from: node_modules\react-native-maps\lib\MapMarkerNativeComponent.js
+
+Import stack:
+
+ node_modules\react-native-maps\lib\MapMarkerNativeComponent.js
+ | import "react-native/Libraries/Utilities/codegenNativeCommands"
+           ^ Importing react-native internals is not supported on web.
+
+ node_modules\react-native-maps\lib\MapMarker.js
+ | import "./MapMarkerNativeComponent"
+
+ node_modules\react-native-maps\lib\index.js
+ | import "./MapMarker"
+
+ app\(tabs)\index.tsx
+ | import "react-native-maps"
+
+ app (require.context)
+
+
+
+Web node_modules\expo-router\_error.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 179ms node_modules\expo-router\_error.js (323 modules)
+ LOG  [web] Logs will appear in the browser console

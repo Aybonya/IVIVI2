@@ -9,7 +9,35 @@ export type RouteTravelMode = 'DRIVE' | 'WALK';
 
 export type RouteTrafficStatus = 'Low' | 'Moderate' | 'High';
 
+export type RouteLabel =
+  | 'DEFAULT_ROUTE'
+  | 'DEFAULT_ROUTE_ALTERNATE'
+  | 'FUEL_EFFICIENT'
+  | 'SHORTER_DISTANCE';
+
+export type VehicleEmissionType = 'GASOLINE' | 'ELECTRIC' | 'HYBRID' | 'DIESEL';
+
+export type RouteReferenceRoute = 'FUEL_EFFICIENT' | 'SHORTER_DISTANCE';
+
+export type RouteModifiersInput = {
+  avoidTolls?: boolean;
+  avoidHighways?: boolean;
+  avoidFerries?: boolean;
+  avoidIndoor?: boolean;
+  vehicleInfo?: {
+    emissionType?: VehicleEmissionType;
+  };
+};
+
+export type FetchRoutesOptions = {
+  travelMode?: RouteTravelMode;
+  computeAlternativeRoutes?: boolean;
+  requestedReferenceRoutes?: RouteReferenceRoute[];
+  routeModifiers?: RouteModifiersInput;
+};
+
 export type TrafficAwareRoute = {
+  encodedPolyline: string;
   path: RouteCoordinate[];
   distanceMeters: number;
   durationSeconds: number;
@@ -20,6 +48,7 @@ export type TrafficAwareRoute = {
   delayMinutes: number;
   etaText: string;
   trafficStatus: RouteTrafficStatus;
+  routeLabels: RouteLabel[];
 };
 
 type ComputeRoutesResponse = {
@@ -27,6 +56,7 @@ type ComputeRoutesResponse = {
     distanceMeters?: number;
     duration?: string;
     staticDuration?: string;
+    routeLabels?: RouteLabel[];
     polyline?: { encodedPolyline?: string };
     localizedValues?: {
       distance?: { text?: string };
@@ -126,52 +156,61 @@ function decodePolyline(encoded: string): RouteCoordinate[] {
   return coordinates;
 }
 
-export async function fetchTrafficAwareRoute(
+function buildRequestBody(
   origin: RouteCoordinate,
   destination: RouteCoordinate,
-  travelMode: RouteTravelMode = 'DRIVE'
-): Promise<TrafficAwareRoute> {
-  if (!hasGoogleRoutesApiKey()) {
-    throw new Error('Add your Google Maps API key in constants/google-maps.ts first.');
-  }
+  {
+    travelMode = 'DRIVE',
+    computeAlternativeRoutes = false,
+    requestedReferenceRoutes = [],
+    routeModifiers,
+  }: FetchRoutesOptions
+) {
+  const resolvedRouteModifiers =
+    requestedReferenceRoutes.includes('FUEL_EFFICIENT') && travelMode === 'DRIVE'
+      ? {
+          ...routeModifiers,
+          vehicleInfo: {
+            emissionType: routeModifiers?.vehicleInfo?.emissionType ?? 'GASOLINE',
+          },
+        }
+      : routeModifiers;
 
   const body: Record<string, unknown> = {
     origin: { location: { latLng: origin } },
     destination: { location: { latLng: destination } },
     travelMode,
-    computeAlternativeRoutes: false,
+    computeAlternativeRoutes,
     languageCode: 'en-US',
     units: 'METRIC',
     polylineQuality: 'HIGH_QUALITY',
     polylineEncoding: 'ENCODED_POLYLINE',
   };
 
+  if (requestedReferenceRoutes.length) {
+    body.requestedReferenceRoutes = requestedReferenceRoutes;
+  }
+
+  if (resolvedRouteModifiers && Object.values(resolvedRouteModifiers).some(Boolean)) {
+    body.routeModifiers = resolvedRouteModifiers;
+  }
+
   if (travelMode === 'DRIVE') {
     body.routingPreference = 'TRAFFIC_AWARE_OPTIMAL';
     body.departureTime = getFutureDepartureTime();
   }
 
-  const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': GOOGLE_ROUTES_API_KEY,
-      'X-Goog-FieldMask':
-        'routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,routes.localizedValues',
-    },
-    body: JSON.stringify(body),
-  });
+  return body;
+}
 
-  const data = (await response.json()) as ComputeRoutesResponse;
+function toTrafficAwareRoute(
+  route: NonNullable<ComputeRoutesResponse['routes']>[number],
+  travelMode: RouteTravelMode
+): TrafficAwareRoute | null {
+  const encodedPolyline = route.polyline?.encodedPolyline;
 
-  if (!response.ok) {
-    throw new Error(data.error?.message || 'Failed to fetch route from Google Routes API.');
-  }
-
-  const route = data.routes?.[0];
-
-  if (!route?.polyline?.encodedPolyline) {
-    throw new Error('Google Routes API returned no route polyline.');
+  if (!encodedPolyline) {
+    return null;
   }
 
   const durationSeconds = parseDurationSeconds(route.duration);
@@ -182,7 +221,8 @@ export async function fetchTrafficAwareRoute(
       : 0;
 
   return {
-    path: decodePolyline(route.polyline.encodedPolyline),
+    encodedPolyline,
+    path: decodePolyline(encodedPolyline),
     distanceMeters: route.distanceMeters ?? 0,
     durationSeconds,
     staticDurationSeconds,
@@ -196,5 +236,59 @@ export async function fetchTrafficAwareRoute(
       travelMode === 'DRIVE'
         ? getTrafficStatus(durationSeconds, staticDurationSeconds)
         : 'Low',
+    routeLabels: Array.isArray(route.routeLabels) ? route.routeLabels : [],
   };
+}
+
+export async function fetchTrafficAwareRoutes(
+  origin: RouteCoordinate,
+  destination: RouteCoordinate,
+  options: FetchRoutesOptions = {}
+): Promise<TrafficAwareRoute[]> {
+  if (!hasGoogleRoutesApiKey()) {
+    throw new Error('Add your Google Maps API key in constants/google-maps.ts first.');
+  }
+
+  const travelMode = options.travelMode ?? 'DRIVE';
+  const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_ROUTES_API_KEY,
+      'X-Goog-FieldMask':
+        'routes.distanceMeters,routes.duration,routes.staticDuration,routes.routeLabels,routes.polyline.encodedPolyline,routes.localizedValues',
+    },
+    body: JSON.stringify(buildRequestBody(origin, destination, options)),
+  });
+
+  const data = (await response.json()) as ComputeRoutesResponse;
+
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Failed to fetch route from Google Routes API.');
+  }
+
+  const routes =
+    data.routes
+      ?.map((route) => toTrafficAwareRoute(route, travelMode))
+      .filter((route): route is TrafficAwareRoute => route !== null) ?? [];
+
+  if (!routes.length) {
+    throw new Error('Google Routes API returned no route polyline.');
+  }
+
+  return routes;
+}
+
+export async function fetchTrafficAwareRoute(
+  origin: RouteCoordinate,
+  destination: RouteCoordinate,
+  travelMode: RouteTravelMode = 'DRIVE'
+): Promise<TrafficAwareRoute> {
+  const [route] = await fetchTrafficAwareRoutes(origin, destination, { travelMode });
+
+  if (!route) {
+    throw new Error('Google Routes API returned no routes.');
+  }
+
+  return route;
 }

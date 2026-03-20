@@ -1,0 +1,28 @@
+Starting project at C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp
+React Compiler enabled
+Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.
+Starting Metro Bundler
+Waiting on http://localhost:8098
+Logs for your project will appear below.
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓░░░░ 79.8% (653/775)
+λ node_modules\expo-router\node\render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 83.0% (801/942)
+λ Bundled 5323ms node_modules\expo-router\node\render.js (1372 modules)
+λ  WARN  props.pointerEvents is deprecated. Use style.pointerEvents 
+  console.warn (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo\node_modules\@expo\cli\src\start\server\serverLogLikeMetro.ts:161:21)
+  warnOnce (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-native-web\dist\modules\warnOnce\index.js:24:13)
+  createDOMProps (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-native-web\dist\modules\createDOMProps\index.js:805:13)
+  createElement (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-native-web\dist\exports\createElement\index.js:23:32)
+  Component (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-native-web\dist\exports\View\index.js:111:23)
+  Object.callComponentInDEV [as react-stack-bottom-frame] (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js:8970:18)
+  renderWithHooks (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js:4699:19)
+  run (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js:5539:39)
+  retryNode (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js:5899:31)
+  renderNodeDestructive (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js:5849:11)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (1263/1263)
+Web Bundled 10163ms node_modules\expo-router\entry.js (1263 modules)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (1263/1263)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.8% (1203/1210)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.8% (1223/1235)
+Web Bundled 10068ms node_modules\expo-router\entry.js (1264 modules)
+ LOG  [web] Logs will appear in the browser console

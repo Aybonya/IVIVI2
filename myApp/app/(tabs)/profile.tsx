@@ -1,10 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,452 +17,547 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { BottomSheet } from '@/components/ui/bottom-sheet';
+import { useAccessibility } from '@/contexts/accessibility-context';
 import { useAuth } from '@/contexts/auth-context';
-import { defaultProfile, loadUserProfile, saveUserProfile, uploadAvatarAsync } from '@/firebase';
+import {
+  COMMUNITY_CHAT_MESSAGES,
+  PROFILE_COMMUNITY_ITEMS,
+  PROFILE_EMERGENCY_ITEMS,
+  QUICK_ACCESSIBILITY_ACTIONS,
+  REPORT_CATEGORIES,
+  GUESS_ALATAU_LEADERBOARD,
+} from '@/lib/smart-city-mock';
 
-type ProfileData = typeof defaultProfile;
+type ActiveSheet = 'chat' | 'report' | 'accessibility' | 'rating' | null;
 
 const palette = {
-  screen: '#EEF3F9',
+  screen: '#F3F4F8',
   card: '#FFFFFF',
-  softCard: 'rgba(15, 25, 40, 0.04)',
-  border: 'rgba(14, 28, 45, 0.10)',
-  text: '#132238',
-  muted: '#66788F',
-  faint: '#7A8CA3',
-  primary: '#365DFF',
-  primarySoft: 'rgba(54, 93, 255, 0.08)',
-  primarySoftBorder: 'rgba(54, 93, 255, 0.14)',
-  dangerSoft: 'rgba(234, 87, 87, 0.08)',
-  dangerBorder: 'rgba(234, 87, 87, 0.16)',
-  dangerText: '#A53B3B',
+  text: '#111111',
+  muted: '#8E99AB',
+  border: 'rgba(16, 22, 40, 0.08)',
+  primary: '#1677FF',
+  primarySoft: 'rgba(22, 119, 255, 0.08)',
+  success: '#34C759',
 };
 
-function FormField({
-  label,
-  placeholder,
+function ProfileRow({
+  title,
+  icon,
+  badge,
+  onPress,
+  tint = '#111111',
   value,
-  onChangeText,
-  multiline = false,
 }: {
-  label: string;
-  placeholder: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  multiline?: boolean;
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  badge?: string;
+  onPress: () => void;
+  tint?: string;
+  value?: string;
 }) {
   return (
-    <View style={styles.fieldBlock}>
-      <ThemedText style={styles.fieldLabel}>{label}</ThemedText>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={palette.faint}
-        multiline={multiline}
-        textAlignVertical={multiline ? 'top' : 'center'}
-        style={[styles.input, multiline && styles.textArea]}
-      />
-    </View>
+    <Pressable style={styles.rowCard} onPress={onPress}>
+      <View style={styles.rowLeft}>
+        <View style={styles.rowIconWrap}>
+          <Ionicons name={icon} size={18} color={tint} />
+        </View>
+        <ThemedText style={[styles.rowTitle, { color: tint }]}>{title}</ThemedText>
+      </View>
+
+      <View style={styles.rowRight}>
+        {value ? <ThemedText style={styles.rowValue}>{value}</ThemedText> : null}
+        {badge ? (
+          <View style={styles.badge}>
+            <ThemedText style={styles.badgeText}>{badge}</ThemedText>
+          </View>
+        ) : null}
+        <Ionicons name="chevron-forward" size={16} color="#C4CBDA" />
+      </View>
+    </Pressable>
   );
 }
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
-  const [profile, setProfile] = useState<ProfileData>({
-    ...defaultProfile,
-    email: user?.email ?? '',
-  });
-  const [savedProfile, setSavedProfile] = useState<ProfileData>({
-    ...defaultProfile,
-    email: user?.email ?? '',
-  });
-  const [statusMessage, setStatusMessage] = useState('Profile sync is ready.');
-  const [errorMessage, setErrorMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const { blindModeEnabled, setBlindModeEnabled } = useAccessibility();
+  const [activeSheet, setActiveSheet] = useState<ActiveSheet>(null);
+  const [chatMessages, setChatMessages] = useState(COMMUNITY_CHAT_MESSAGES);
+  const [chatDraft, setChatDraft] = useState('');
+  const [selectedReportCategory, setSelectedReportCategory] = useState<string | null>(null);
+  const [reportText, setReportText] = useState('');
+  const [reportImageUri, setReportImageUri] = useState('');
+  const [reportSuccess, setReportSuccess] = useState('');
+  const [isPickingReportImage, setIsPickingReportImage] = useState(false);
+  const [fontSize, setFontSize] = useState(16);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [language, setLanguage] = useState<'Рус' | 'Қаз'>('Рус');
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
 
-  useEffect(() => {
+  const displayName = useMemo(() => {
+    if (!user?.email) {
+      return 'Гость';
+    }
+
+    return user.email.split('@')[0] || 'Пользователь';
+  }, [user?.email]);
+
+  const handleAuthAction = async () => {
     if (!user) {
+      router.push('/(auth)');
       return;
     }
 
-    const fetchProfile = async () => {
-      setIsLoading(true);
-      setErrorMessage('');
-
-      try {
-        const profileData = await loadUserProfile(user.uid, user.email ?? '');
-        setProfile(profileData);
-        setSavedProfile(profileData);
-        setStatusMessage('Profile loaded from Firebase.');
-        setIsEditing(false);
-      } catch (error) {
-        setProfile({
-          ...defaultProfile,
-          email: user.email ?? '',
-        });
-        setSavedProfile({
-          ...defaultProfile,
-          email: user.email ?? '',
-        });
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Failed to load profile from Firestore.'
-        );
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    void fetchProfile();
-  }, [user]);
-
-  const fullName = useMemo(() => {
-    const value = `${profile.firstName} ${profile.lastName}`.trim();
-    return value || 'Your profile';
-  }, [profile.firstName, profile.lastName]);
-
-  const initials = useMemo(() => {
-    const first = profile.firstName.trim().charAt(0);
-    const last = profile.lastName.trim().charAt(0);
-    const value = `${first}${last}`.toUpperCase();
-    return value || 'U';
-  }, [profile.firstName, profile.lastName]);
-
-  const publicAccessibilitySummary =
-    savedProfile.disabilities.trim().length === 0
-      ? 'Not provided'
-      : savedProfile.hideDisabilities
-        ? 'Hidden from profile view'
-        : savedProfile.disabilities;
-
-  const updateField = <K extends keyof ProfileData>(key: K, value: ProfileData[K]) => {
-    setProfile((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  };
-
-  const handleSaveProfile = async () => {
-    if (!user) {
-      return;
-    }
-
-    setIsSaving(true);
-    setErrorMessage('');
+    setIsSigningOut(true);
 
     try {
-      const nextProfile = {
-        ...profile,
-        firstName: profile.firstName.trim(),
-        lastName: profile.lastName.trim(),
-        gender: profile.gender.trim(),
-        disabilities: profile.disabilities.trim(),
-        occupation: profile.occupation.trim(),
-        email: user.email ?? profile.email,
-      };
-
-      await saveUserProfile(user.uid, nextProfile);
-      const freshProfile = await loadUserProfile(user.uid, user.email ?? '');
-      setProfile(freshProfile);
-      setSavedProfile(freshProfile);
-      setStatusMessage('Profile saved to Firestore successfully.');
-      setIsEditing(false);
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to save profile to Firestore.'
-      );
+      await signOut();
     } finally {
-      setIsSaving(false);
+      setIsSigningOut(false);
     }
   };
 
-  const handleAvatarPress = async () => {
-    if (!user || !isEditing) {
+  const handleSendMessage = () => {
+    const text = chatDraft.trim();
+
+    if (!text) {
       return;
     }
 
-    setErrorMessage('');
+    setChatMessages((current) => [
+      ...current,
+      {
+        id: `local-${Date.now()}`,
+        author: 'Вы',
+        text,
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        own: true,
+      },
+    ]);
+    setChatDraft('');
+  };
 
+  const canSubmitReport =
+    !!selectedReportCategory && (reportText.trim().length >= 6 || reportImageUri.length > 0);
+
+  const handlePickReportImage = async () => {
     try {
+      setIsPickingReportImage(true);
+
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
       if (!permission.granted) {
-        setErrorMessage('Photo library access is needed to choose an avatar.');
         return;
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.9,
       });
 
       if (result.canceled || !result.assets?.[0]?.uri) {
         return;
       }
 
-      setIsUploadingAvatar(true);
-
-      const downloadUrl = await uploadAvatarAsync(user.uid, result.assets[0].uri);
-      const nextProfile = {
-        ...profile,
-        avatarUrl: downloadUrl,
-        email: user.email ?? profile.email,
-      };
-
-      await saveUserProfile(user.uid, nextProfile);
-      setProfile(nextProfile);
-      setSavedProfile(nextProfile);
-      setStatusMessage('Avatar uploaded and profile updated.');
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload avatar.');
+      setReportImageUri(result.assets[0].uri);
     } finally {
-      setIsUploadingAvatar(false);
+      setIsPickingReportImage(false);
     }
   };
 
-  const handleLogout = async () => {
-    setIsSigningOut(true);
-
-    try {
-      await signOut();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to sign out.');
-    } finally {
-      setIsSigningOut(false);
+  const handleSubmitReport = () => {
+    if (!canSubmitReport) {
+      return;
     }
+
+    setReportSuccess('Заявка отправлена в систему города.');
+    setSelectedReportCategory(null);
+    setReportText('');
+    setReportImageUri('');
+    setActiveSheet(null);
   };
 
-  const startEditing = () => {
-    setProfile(savedProfile);
-    setErrorMessage('');
-    setStatusMessage('Editing profile locally. Save when you are ready.');
-    setIsEditing(true);
-  };
+  const handleBlindModeToggle = async (enabled: boolean) => {
+    await setBlindModeEnabled(enabled);
 
-  const cancelEditing = () => {
-    setProfile(savedProfile);
-    setErrorMessage('');
-    setStatusMessage('Changes discarded.');
-    setIsEditing(false);
+    if (enabled) {
+      setActiveSheet(null);
+      router.push('/(tabs)/vision');
+    }
   };
 
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar style="dark" />
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <ThemedText style={styles.title}>Профиль</ThemedText>
+        </View>
+
         <View style={styles.heroCard}>
-          <View style={styles.heroToolbar}>
-            <View style={styles.heroToolbarSpacer} />
-            {isEditing ? (
-              <Pressable style={styles.editGhostButton} onPress={cancelEditing}>
-                <ThemedText style={styles.editGhostButtonText}>Cancel</ThemedText>
-              </Pressable>
+          <View style={styles.avatar}>
+            <Ionicons name="person-outline" size={42} color="#FFFFFF" />
+          </View>
+          <ThemedText style={styles.heroName}>{displayName}</ThemedText>
+          {user?.email ? <ThemedText style={styles.heroSubtitle}>{user.email}</ThemedText> : null}
+
+          <Pressable style={styles.primaryButton} onPress={() => void handleAuthAction()}>
+            {isSigningOut ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
-              <Pressable style={styles.editButton} onPress={startEditing}>
-                <Ionicons name="create-outline" size={16} color="#365DFF" />
-                <ThemedText style={styles.editButtonText}>Edit</ThemedText>
-              </Pressable>
+              <ThemedText style={styles.primaryButtonText}>
+                {user ? 'Выйти из профиля' : 'Войти через ЭЦП'}
+              </ThemedText>
             )}
-          </View>
+          </Pressable>
 
-          <View style={styles.heroTop}>
-            <Pressable style={styles.avatarWrap} onPress={() => void handleAvatarPress()}>
-              {profile.avatarUrl ? (
-                <Image source={{ uri: profile.avatarUrl }} style={styles.avatarImage} contentFit="cover" />
-              ) : (
-                <View style={styles.avatar}>
-                  <ThemedText style={styles.avatarText}>{initials}</ThemedText>
-                </View>
-              )}
-
-              {isEditing ? (
-                <View style={styles.avatarBadge}>
-                  {isUploadingAvatar ? (
-                    <ActivityIndicator size="small" color="#F8FAFF" />
-                  ) : (
-                    <Ionicons name="camera-outline" size={14} color="#F8FAFF" />
-                  )}
-                </View>
-              ) : null}
-            </Pressable>
-
-            <View style={styles.heroText}>
-              <ThemedText style={styles.eyebrow}>Profile</ThemedText>
-              <ThemedText style={styles.name}>{fullName}</ThemedText>
-              <ThemedText style={styles.subtitle}>
-                Manage your personal details and accessibility preferences.
-              </ThemedText>
-              <ThemedText style={styles.emailText}>{user?.email ?? 'No email found'}</ThemedText>
+          <Pressable style={styles.gameCard} onPress={() => router.push('/guess-alatau')}>
+            <View style={styles.gameIconWrap}>
+              <Ionicons name="map-outline" size={22} color="#1677FF" />
             </View>
-          </View>
+            <View style={styles.gameText}>
+              <ThemedText style={styles.gameTitle}>Угадай Алатау</ThemedText>
+              <ThemedText style={styles.gameSubtitle}>Игра — угадай место по фото</ThemedText>
+            </View>
+            <View style={styles.playButton}>
+              <ThemedText style={styles.playButtonText}>Играть</ThemedText>
+            </View>
+          </Pressable>
 
-          <View style={styles.heroStats}>
-            <View style={styles.statPill}>
-              <ThemedText style={styles.statLabel}>Occupation</ThemedText>
-              <ThemedText style={styles.statValue}>
-                {savedProfile.occupation || 'Not provided'}
-              </ThemedText>
+          {reportSuccess ? (
+            <View style={styles.successCard}>
+              <Ionicons name="checkmark-circle-outline" size={16} color={palette.success} />
+              <ThemedText style={styles.successText}>{reportSuccess}</ThemedText>
             </View>
-            <View style={styles.statPill}>
-              <ThemedText style={styles.statLabel}>Privacy</ThemedText>
-              <ThemedText style={styles.statValue}>
-                {savedProfile.hideDisabilities ? 'Protected' : 'Visible'}
-              </ThemedText>
-            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.sectionBlock}>
+          <ThemedText style={styles.sectionLabel}>КОМЬЮНИТИ</ThemedText>
+          <View style={styles.groupCard}>
+            {PROFILE_COMMUNITY_ITEMS.map((item) => (
+              <ProfileRow
+                key={item.id}
+                title={item.title}
+                icon={item.icon as keyof typeof Ionicons.glyphMap}
+                badge={item.badge}
+                onPress={() => {
+                  if (item.id === 'chat') {
+                    setActiveSheet('chat');
+                    return;
+                  }
+
+                  if (item.id === 'report') {
+                    setActiveSheet('report');
+                    return;
+                  }
+
+                  setActiveSheet('rating');
+                }}
+              />
+            ))}
           </View>
         </View>
 
-        {isLoading ? (
-          <View style={styles.feedbackCard}>
-            <ActivityIndicator size="small" color={palette.primary} />
-            <ThemedText style={styles.feedbackText}>Loading profile...</ThemedText>
+        <View style={styles.sectionBlock}>
+          <ThemedText style={styles.sectionLabel}>НАСТРОЙКИ</ThemedText>
+          <View style={styles.groupCard}>
+            <ProfileRow
+              title="Уведомления"
+              icon="notifications-outline"
+              value={notificationsEnabled ? 'Вкл' : 'Выкл'}
+              onPress={() => setNotificationsEnabled((current) => !current)}
+            />
+            <ProfileRow
+              title="Язык / Тіл"
+              icon="language-outline"
+              value={language}
+              onPress={() => setLanguage((current) => (current === 'Рус' ? 'Қаз' : 'Рус'))}
+            />
+            <ProfileRow
+              title="Спец. возможности"
+              icon="accessibility-outline"
+              onPress={() => setActiveSheet('accessibility')}
+            />
           </View>
-        ) : null}
+        </View>
 
-        {!isLoading && errorMessage ? (
-          <View style={[styles.feedbackCard, styles.errorCard]}>
-            <Ionicons name="alert-circle-outline" size={18} color={palette.dangerText} />
-            <ThemedText style={[styles.feedbackText, styles.errorText]}>{errorMessage}</ThemedText>
+        <View style={styles.sectionBlock}>
+          <ThemedText style={styles.sectionLabel}>ЭКСТРЕННЫЕ</ThemedText>
+          <View style={styles.groupCard}>
+            {PROFILE_EMERGENCY_ITEMS.map((item) => (
+              <ProfileRow
+                key={item.id}
+                title={item.title}
+                icon={item.icon as keyof typeof Ionicons.glyphMap}
+                tint={item.tone}
+                onPress={() => void Linking.openURL(`tel:${item.title.match(/\d+/)?.[0] ?? '112'}`)}
+              />
+            ))}
           </View>
-        ) : null}
+        </View>
 
-        {!isLoading && !errorMessage ? (
-          <View style={styles.feedbackCard}>
-            <Ionicons name="checkmark-circle-outline" size={18} color={palette.primary} />
-            <ThemedText style={styles.feedbackText}>{statusMessage}</ThemedText>
-          </View>
-        ) : null}
+        <ThemedText style={styles.footerText}>Alatau Smart City v1.0.0 · г. Алматы</ThemedText>
+      </ScrollView>
 
-        <View style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <ThemedText style={styles.sectionTitle}>
-              {isEditing ? 'Edit profile' : 'Profile details'}
-            </ThemedText>
-            <ThemedText style={styles.sectionCaption}>
-              {isEditing
-                ? 'Update your fields and save changes when you are ready.'
-                : 'Your saved information lives here. Tap Edit in the top-right corner to make changes.'}
-            </ThemedText>
-          </View>
-
-          {isEditing ? (
-            <>
-              <FormField
-                label="First name"
-                placeholder="Enter first name"
-                value={profile.firstName}
-                onChangeText={(value) => updateField('firstName', value)}
-              />
-              <FormField
-                label="Last name"
-                placeholder="Enter last name"
-                value={profile.lastName}
-                onChangeText={(value) => updateField('lastName', value)}
-              />
-              <FormField
-                label="Gender"
-                placeholder="How would you like to describe your gender?"
-                value={profile.gender}
-                onChangeText={(value) => updateField('gender', value)}
-              />
-              <FormField
-                label="Accessibility needs or disabilities (optional)"
-                placeholder="Add anything helpful for support, access, or comfort"
-                value={profile.disabilities}
-                onChangeText={(value) => updateField('disabilities', value)}
-                multiline
-              />
-
-              <View style={styles.toggleCard}>
-                <View style={styles.toggleText}>
-                  <ThemedText style={styles.toggleTitle}>
-                    Hide this information from profile view
-                  </ThemedText>
-                  <ThemedText style={styles.toggleCaption}>
-                    Keep accessibility details private in the public summary while still storing
-                    them in Firebase.
-                  </ThemedText>
-                </View>
-                <Switch
-                  value={profile.hideDisabilities}
-                  onValueChange={(value) => updateField('hideDisabilities', value)}
-                  trackColor={{ false: '#C9D3E1', true: '#365DFF' }}
-                  thumbColor="#FFFFFF"
-                />
-              </View>
-
-              <FormField
-                label="Occupation / work"
-                placeholder="What do you do?"
-                value={profile.occupation}
-                onChangeText={(value) => updateField('occupation', value)}
-              />
-
-              <Pressable
-                style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
-                onPress={() => void handleSaveProfile()}
-                disabled={isSaving}>
-                {isSaving ? (
-                  <ActivityIndicator size="small" color="#F8FAFF" />
-                ) : (
-                  <Ionicons name="save-outline" size={18} color="#F8FAFF" />
-                )}
-                <ThemedText style={styles.primaryButtonText}>
-                  {isSaving ? 'Saving...' : 'Save profile'}
+      <BottomSheet
+        visible={activeSheet === 'chat'}
+        title="Чат жителей Алатау"
+        icon="chatbubble-ellipses-outline"
+        onClose={() => setActiveSheet(null)}>
+        <View style={styles.sheetContent}>
+          <ScrollView style={styles.chatList} showsVerticalScrollIndicator={false}>
+            {chatMessages.map((message) => (
+              <View
+                key={message.id}
+                style={[
+                  styles.messageBubble,
+                  message.own ? styles.ownMessageBubble : styles.otherMessageBubble,
+                ]}>
+                {!message.own ? <ThemedText style={styles.messageAuthor}>{message.author}</ThemedText> : null}
+                <ThemedText style={[styles.messageText, message.own && styles.ownMessageText]}>
+                  {message.text}
                 </ThemedText>
-              </Pressable>
-            </>
-          ) : (
-            <View style={styles.viewModeCard}>
-              <View style={styles.viewModeRow}>
-                <ThemedText style={styles.viewModeLabel}>First name</ThemedText>
-                <ThemedText style={styles.viewModeValue}>{savedProfile.firstName || 'Not provided'}</ThemedText>
-              </View>
-              <View style={styles.viewModeRow}>
-                <ThemedText style={styles.viewModeLabel}>Last name</ThemedText>
-                <ThemedText style={styles.viewModeValue}>{savedProfile.lastName || 'Not provided'}</ThemedText>
-              </View>
-              <View style={styles.viewModeRow}>
-                <ThemedText style={styles.viewModeLabel}>Gender</ThemedText>
-                <ThemedText style={styles.viewModeValue}>{savedProfile.gender || 'Not provided'}</ThemedText>
-              </View>
-              <View style={styles.viewModeRow}>
-                <ThemedText style={styles.viewModeLabel}>Occupation</ThemedText>
-                <ThemedText style={styles.viewModeValue}>
-                  {savedProfile.occupation || 'Not provided'}
+                <ThemedText style={[styles.messageTime, message.own && styles.ownMessageTime]}>
+                  {message.time}
                 </ThemedText>
               </View>
-              <View style={styles.viewModeRow}>
-                <ThemedText style={styles.viewModeLabel}>Accessibility</ThemedText>
-                <ThemedText style={styles.viewModeValue}>{publicAccessibilitySummary}</ThemedText>
-              </View>
-            </View>
-          )}
+            ))}
+          </ScrollView>
 
-          <Pressable
-            style={[styles.secondaryButton, isSigningOut && styles.buttonDisabled]}
-            onPress={() => void handleLogout()}
-            disabled={isSigningOut}>
-            {isSigningOut ? (
-              <ActivityIndicator size="small" color="#F8FAFF" />
-            ) : (
-              <Ionicons name="log-out-outline" size={18} color="#F8FAFF" />
-            )}
-            <ThemedText style={styles.secondaryButtonText}>
-              {isSigningOut ? 'Signing out...' : 'Logout'}
-            </ThemedText>
+          <View style={styles.chatComposerRow}>
+            <TextInput
+              value={chatDraft}
+              onChangeText={setChatDraft}
+              placeholder="Написать..."
+              placeholderTextColor={palette.muted}
+              style={styles.chatInput}
+            />
+            <Pressable style={styles.sendButton} onPress={handleSendMessage}>
+              <Ionicons name="paper-plane-outline" size={18} color="#FFFFFF" />
+            </Pressable>
+          </View>
+
+          <Pressable style={styles.closeButton} onPress={() => setActiveSheet(null)}>
+            <ThemedText style={styles.closeButtonText}>Закрыть</ThemedText>
           </Pressable>
         </View>
-      </ScrollView>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={activeSheet === 'report'}
+        title="Сообщить о проблеме"
+        icon="megaphone-outline"
+        onClose={() => setActiveSheet(null)}>
+        <View style={styles.sheetContent}>
+          <ThemedText style={styles.formLabel}>КАТЕГОРИЯ</ThemedText>
+          <View style={styles.categoryGrid}>
+            {REPORT_CATEGORIES.map((category) => {
+              const active = selectedReportCategory === category.id;
+
+              return (
+                <Pressable
+                  key={category.id}
+                  style={[styles.categoryChip, active && styles.categoryChipActive]}
+                  onPress={() => setSelectedReportCategory(category.id)}>
+                  <Ionicons
+                    name={category.icon as keyof typeof Ionicons.glyphMap}
+                    size={16}
+                    color={active ? '#1677FF' : '#111111'}
+                  />
+                  <ThemedText style={[styles.categoryText, active && styles.categoryTextActive]}>
+                    {category.label}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <ThemedText style={[styles.formLabel, styles.formLabelOffset]}>ОПИСАНИЕ</ThemedText>
+          <TextInput
+            value={reportText}
+            onChangeText={setReportText}
+            placeholder="Опишите подробнее..."
+            placeholderTextColor={palette.muted}
+            multiline
+            textAlignVertical="top"
+            style={styles.reportInput}
+          />
+
+          <ThemedText style={[styles.formLabel, styles.formLabelOffset]}>Р¤РћРўРћ</ThemedText>
+          <Pressable style={styles.attachButton} onPress={() => void handlePickReportImage()}>
+            <View style={styles.attachButtonLeft}>
+              {isPickingReportImage ? (
+                <ActivityIndicator size="small" color={palette.primary} />
+              ) : (
+                <Ionicons name="image-outline" size={18} color={palette.primary} />
+              )}
+              <ThemedText style={styles.attachButtonText}>
+                {reportImageUri ? 'РР·РјРµРЅРёС‚СЊ РёР·РѕР±СЂР°Р¶РµРЅРёРµ' : 'РџСЂРёРєСЂРµРїРёС‚СЊ РёР·РѕР±СЂР°Р¶РµРЅРёРµ'}
+              </ThemedText>
+            </View>
+            <Ionicons name="add-circle-outline" size={18} color={palette.primary} />
+          </Pressable>
+
+          {reportImageUri ? (
+            <View style={styles.reportPreviewCard}>
+              <Image source={{ uri: reportImageUri }} style={styles.reportPreviewImage} contentFit="cover" />
+              <View style={styles.reportPreviewMeta}>
+                <ThemedText style={styles.reportPreviewTitle}>Р¤РѕС‚Рѕ РїСЂРёРєСЂРµРїР»РµРЅРѕ</ThemedText>
+                <ThemedText style={styles.reportPreviewCaption}>
+                  РњРѕР¶РЅРѕ РѕС‚РїСЂР°РІРёС‚СЊ Р·Р°СЏРІРєСѓ СЃ С„РѕС‚Рѕ РёР»Рё Р·Р°РјРµРЅРёС‚СЊ РµРіРѕ.
+                </ThemedText>
+              </View>
+              <Pressable style={styles.removePreviewButton} onPress={() => setReportImageUri('')}>
+                <Ionicons name="close" size={16} color="#FFFFFF" />
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Pressable
+            style={[
+              styles.primaryActionButton,
+              !canSubmitReport && styles.disabledButton,
+            ]}
+            onPress={handleSubmitReport}
+            disabled={!canSubmitReport}>
+            <ThemedText style={styles.primaryActionButtonText}>Отправить заявку</ThemedText>
+          </Pressable>
+
+          <Pressable style={styles.closeButton} onPress={() => setActiveSheet(null)}>
+            <ThemedText style={styles.closeButtonText}>Закрыть</ThemedText>
+          </Pressable>
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={activeSheet === 'accessibility'}
+        title="Спец. возможности"
+        icon="accessibility-outline"
+        onClose={() => setActiveSheet(null)}>
+        <View style={styles.sheetContent}>
+          <View style={styles.blindModeCard}>
+            <View style={styles.blindModeCopy}>
+              <ThemedText style={styles.blindModeTitle}>Режим для незрячих</ThemedText>
+              <ThemedText style={styles.blindModeText}>
+                Добавляет вкладку &quot;Зрение&quot;, открывает камеру и включает голосовые
+                подсказки.
+              </ThemedText>
+            </View>
+
+            <Switch
+              value={blindModeEnabled}
+              onValueChange={(value) => void handleBlindModeToggle(value)}
+              trackColor={{ false: '#D9DEE8', true: 'rgba(22, 119, 255, 0.42)' }}
+              thumbColor={blindModeEnabled ? '#1677FF' : '#FFFFFF'}
+            />
+          </View>
+
+          {blindModeEnabled ? (
+            <Pressable
+              style={styles.openVisionButton}
+              onPress={() => {
+                setActiveSheet(null);
+                router.push('/(tabs)/vision');
+              }}>
+              <Ionicons name="eye-outline" size={18} color="#FFFFFF" />
+              <ThemedText style={styles.openVisionButtonText}>
+                Открыть вкладку &quot;Зрение&quot;
+              </ThemedText>
+            </Pressable>
+          ) : null}
+
+          <View style={styles.visionCard}>
+            <ThemedText style={styles.visionTitle}>Алатау Вижн</ThemedText>
+            <ThemedText style={styles.visionText}>
+              Камера + голосовая навигация для слабовидящих
+            </ThemedText>
+            <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          </View>
+
+          <ThemedText style={styles.formLabel}>ГОЛОСОВОЕ УПРАВЛЕНИЕ</ThemedText>
+          <Pressable
+            style={[
+              styles.voiceButton,
+              isVoiceListening && { backgroundColor: '#1FB24D' },
+            ]}
+            onPress={() => setIsVoiceListening((current) => !current)}>
+            <Ionicons name="mic-outline" size={18} color="#FFFFFF" />
+            <ThemedText style={styles.voiceButtonText}>
+              {isVoiceListening ? 'Остановить распознавание' : 'Начать распознавание'}
+            </ThemedText>
+          </Pressable>
+
+          <ThemedText style={[styles.formLabel, styles.formLabelOffset]}>РАЗМЕР ШРИФТА</ThemedText>
+          <View style={styles.fontControls}>
+            {[14, 16, 18, 20].map((size) => {
+              const active = size === fontSize;
+
+              return (
+                <Pressable
+                  key={size}
+                  style={[styles.fontChip, active && styles.fontChipActive]}
+                  onPress={() => setFontSize(size)}>
+                  <ThemedText style={[styles.fontChipText, active && styles.fontChipTextActive]}>
+                    {size}px
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={styles.fontPreview}>
+            <ThemedText style={{ color: '#111111', fontSize, lineHeight: fontSize + 6 }}>
+              Пример текста — {fontSize}px
+            </ThemedText>
+          </View>
+
+          <ThemedText style={[styles.formLabel, styles.formLabelOffset]}>БЫСТРАЯ ОЗВУЧКА</ThemedText>
+          <View style={styles.quickActionsRow}>
+            {QUICK_ACCESSIBILITY_ACTIONS.map((item) => (
+              <View key={item.id} style={styles.quickActionChip}>
+                <Ionicons name={item.icon as keyof typeof Ionicons.glyphMap} size={15} color="#111111" />
+                <ThemedText style={styles.quickActionText}>{item.label}</ThemedText>
+              </View>
+            ))}
+          </View>
+
+          <Pressable style={styles.closeButton} onPress={() => setActiveSheet(null)}>
+            <ThemedText style={styles.closeButtonText}>Закрыть</ThemedText>
+          </Pressable>
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={activeSheet === 'rating'}
+        title="Рейтинг активности"
+        icon="trophy-outline"
+        onClose={() => setActiveSheet(null)}>
+        <View style={styles.sheetContent}>
+          <View style={styles.ratingCard}>
+            <ThemedText style={styles.ratingBig}>24 место</ThemedText>
+            <ThemedText style={styles.ratingCaption}>Ваш текущий городской прогресс</ThemedText>
+          </View>
+
+          {GUESS_ALATAU_LEADERBOARD.map((player, index) => (
+            <View key={player.id} style={styles.leaderboardRow}>
+              <ThemedText style={styles.leaderboardPlace}>#{index + 1}</ThemedText>
+              <ThemedText style={styles.leaderboardName}>{player.name}</ThemedText>
+              <ThemedText style={styles.leaderboardScore}>{player.score}</ThemedText>
+            </View>
+          ))}
+
+          <Pressable style={styles.closeButton} onPress={() => setActiveSheet(null)}>
+            <ThemedText style={styles.closeButtonText}>Закрыть</ThemedText>
+          </Pressable>
+        </View>
+      </BottomSheet>
     </SafeAreaView>
   );
 }
@@ -470,323 +567,576 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: palette.screen,
   },
-  scroll: {
-    flex: 1,
-  },
   content: {
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 120,
-    gap: 16,
+    paddingBottom: 110,
+  },
+  header: {
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  title: {
+    color: palette.text,
+    fontSize: 27,
+    lineHeight: 30,
+    fontWeight: '800',
   },
   heroCard: {
-    borderRadius: 30,
+    borderRadius: 26,
     padding: 18,
     backgroundColor: palette.card,
     borderWidth: 1,
     borderColor: palette.border,
-    shadowColor: '#0F1A2B',
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    shadowOffset: {
-      width: 0,
-      height: 10,
-    },
-    elevation: 6,
-  },
-  heroToolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 14,
   },
-  heroToolbarSpacer: {
-    width: 1,
-    height: 1,
-  },
-  editButton: {
-    flexDirection: 'row',
+  avatar: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
     alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: palette.primarySoft,
+    justifyContent: 'center',
+    backgroundColor: palette.primary,
+  },
+  heroName: {
+    marginTop: 14,
+    color: palette.text,
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: '800',
+  },
+  heroSubtitle: {
+    marginTop: 4,
+    color: palette.muted,
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  primaryButton: {
+    width: '100%',
+    marginTop: 18,
+    borderRadius: 18,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.primary,
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    lineHeight: 19,
+    fontWeight: '800',
+  },
+  gameCard: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
-    borderColor: palette.primarySoftBorder,
+    borderColor: 'rgba(22, 119, 255, 0.18)',
+    backgroundColor: 'rgba(22, 119, 255, 0.05)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
-  editButtonText: {
+  gameIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gameText: {
+    flex: 1,
+  },
+  gameTitle: {
     color: palette.primary,
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  gameSubtitle: {
+    color: '#4D6B9D',
+    fontSize: 13,
+    lineHeight: 17,
+    marginTop: 4,
+  },
+  playButton: {
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: palette.primary,
+  },
+  playButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  successCard: {
+    width: '100%',
+    marginTop: 14,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(52, 199, 89, 0.10)',
+  },
+  successText: {
+    color: '#2B8A45',
     fontSize: 13,
     lineHeight: 16,
     fontWeight: '700',
   },
-  editGhostButton: {
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#F5F8FC',
+  sectionBlock: {
+    marginTop: 16,
+  },
+  sectionLabel: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  groupCard: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: palette.card,
     borderWidth: 1,
     borderColor: palette.border,
   },
-  editGhostButtonText: {
+  rowCard: {
+    minHeight: 56,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  rowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  rowIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    backgroundColor: '#F4F6FB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowTitle: {
+    fontSize: 16,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  rowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  rowValue: {
     color: palette.muted,
     fontSize: 13,
     lineHeight: 16,
     fontWeight: '700',
   },
-  heroTop: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  avatarWrap: {
-    position: 'relative',
-  },
-  avatar: {
-    width: 82,
-    height: 82,
-    borderRadius: 28,
-    backgroundColor: '#DDE7F6',
-    borderWidth: 1,
-    borderColor: palette.border,
+  badge: {
+    minWidth: 26,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 8,
+    backgroundColor: '#FF453A',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarImage: {
-    width: 82,
-    height: 82,
-    borderRadius: 28,
-  },
-  avatarText: {
-    color: palette.text,
-    fontSize: 28,
-    lineHeight: 30,
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    lineHeight: 14,
     fontWeight: '800',
   },
-  avatarBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
+  footerText: {
+    marginTop: 20,
+    color: '#C1C8D6',
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'center',
+  },
+  sheetContent: {
+    gap: 14,
+  },
+  chatList: {
+    maxHeight: 360,
+  },
+  messageBubble: {
+    maxWidth: '82%',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
+  },
+  otherMessageBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#F1F3F8',
+  },
+  ownMessageBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: palette.primary,
+  },
+  messageAuthor: {
+    color: palette.primary,
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  messageText: {
+    color: palette.text,
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  ownMessageText: {
+    color: '#FFFFFF',
+  },
+  messageTime: {
+    marginTop: 8,
+    color: palette.muted,
+    fontSize: 11,
+    lineHeight: 13,
+    textAlign: 'right',
+  },
+  ownMessageTime: {
+    color: 'rgba(255,255,255,0.72)',
+  },
+  chatComposerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  chatInput: {
+    flex: 1,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#F4F6FB',
+    color: palette.text,
+    fontSize: 15,
+  },
+  sendButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.primary,
+  },
+  closeButton: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F6FB',
+  },
+  closeButtonText: {
+    color: palette.text,
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  formLabel: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: '700',
+  },
+  formLabelOffset: {
+    marginTop: 4,
+  },
+  categoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  categoryChip: {
+    width: '48%',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#F4F6FB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  categoryChipActive: {
+    backgroundColor: 'rgba(22, 119, 255, 0.10)',
+  },
+  categoryText: {
+    color: palette.text,
+    fontSize: 14,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  categoryTextActive: {
+    color: palette.primary,
+  },
+  reportInput: {
+    minHeight: 90,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#F4F6FB',
+    color: palette.text,
+    fontSize: 15,
+  },
+  attachButton: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#F4F6FB',
+    borderWidth: 1,
+    borderColor: 'rgba(22, 119, 255, 0.10)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  attachButtonLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  attachButtonText: {
+    color: palette.primary,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  reportPreviewCard: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: '#F4F6FB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  reportPreviewImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 14,
+  },
+  reportPreviewMeta: {
+    flex: 1,
+  },
+  reportPreviewTitle: {
+    color: palette.text,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  reportPreviewCaption: {
+    marginTop: 4,
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  removePreviewButton: {
     width: 28,
     height: 28,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.primary,
-    borderWidth: 2,
-    borderColor: palette.card,
+    backgroundColor: '#18263C',
   },
-  heroText: {
-    flex: 1,
-    paddingTop: 4,
-  },
-  eyebrow: {
-    color: palette.muted,
-    fontSize: 12,
-    lineHeight: 14,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  name: {
-    color: palette.text,
-    fontSize: 28,
-    lineHeight: 32,
-    fontWeight: '800',
-    marginTop: 8,
-  },
-  subtitle: {
-    color: palette.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 8,
-  },
-  emailText: {
-    color: '#556A86',
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 8,
-    fontWeight: '600',
-  },
-  heroStats: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
-  },
-  statPill: {
-    flex: 1,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: palette.softCard,
-  },
-  statLabel: {
-    color: palette.faint,
-    fontSize: 11,
-    lineHeight: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  statValue: {
-    color: palette.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '700',
-    marginTop: 6,
-  },
-  feedbackCard: {
-    flexDirection: 'row',
-    gap: 10,
+  primaryActionButton: {
+    borderRadius: 16,
+    paddingVertical: 15,
     alignItems: 'center',
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: palette.card,
-    borderWidth: 1,
-    borderColor: palette.primarySoftBorder,
+    justifyContent: 'center',
+    backgroundColor: palette.primary,
   },
-  feedbackText: {
-    flex: 1,
-    color: palette.text,
-    fontSize: 13,
+  disabledButton: {
+    opacity: 0.45,
+  },
+  primaryActionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
     lineHeight: 18,
-    fontWeight: '600',
-  },
-  errorCard: {
-    borderColor: palette.dangerBorder,
-    backgroundColor: palette.dangerSoft,
-  },
-  errorText: {
-    color: palette.dangerText,
-  },
-  sectionCard: {
-    borderRadius: 28,
-    padding: 18,
-    backgroundColor: palette.card,
-    borderWidth: 1,
-    borderColor: palette.border,
-  },
-  sectionHeader: {
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    color: palette.text,
-    fontSize: 20,
-    lineHeight: 24,
     fontWeight: '800',
   },
-  sectionCaption: {
+  blindModeCard: {
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: '#F4F6FB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  blindModeCopy: {
+    flex: 1,
+  },
+  blindModeTitle: {
+    color: palette.text,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+  blindModeText: {
+    marginTop: 6,
     color: palette.muted,
     fontSize: 13,
     lineHeight: 18,
+  },
+  openVisionButton: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: palette.primary,
+  },
+  openVisionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  visionCard: {
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: '#090909',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  visionTitle: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 17,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+  visionText: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  voiceButton: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: palette.success,
+  },
+  voiceButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  fontControls: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  fontChip: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#F4F6FB',
+  },
+  fontChipActive: {
+    backgroundColor: 'rgba(22, 119, 255, 0.12)',
+  },
+  fontChipText: {
+    color: palette.text,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  fontChipTextActive: {
+    color: palette.primary,
+  },
+  fontPreview: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#F4F6FB',
+  },
+  quickActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  quickActionChip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#F4F6FB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  quickActionText: {
+    color: palette.text,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  ratingCard: {
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: palette.primarySoft,
+  },
+  ratingBig: {
+    color: palette.primary,
+    fontSize: 24,
+    lineHeight: 28,
+    fontWeight: '800',
+  },
+  ratingCaption: {
     marginTop: 6,
+    color: '#5E7FB0',
+    fontSize: 13,
+    lineHeight: 17,
   },
-  fieldBlock: {
-    marginBottom: 14,
+  leaderboardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+    paddingVertical: 12,
   },
-  fieldLabel: {
+  leaderboardPlace: {
+    width: 34,
     color: palette.muted,
     fontSize: 13,
     lineHeight: 16,
     fontWeight: '700',
-    marginBottom: 8,
   },
-  input: {
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: '#F7FAFD',
-    borderWidth: 1,
-    borderColor: palette.border,
-    color: palette.text,
-    fontSize: 15,
-  },
-  textArea: {
-    minHeight: 100,
-  },
-  toggleCard: {
-    borderRadius: 20,
-    padding: 14,
-    marginBottom: 14,
-    backgroundColor: palette.softCard,
-    borderWidth: 1,
-    borderColor: palette.border,
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-  },
-  toggleText: {
+  leaderboardName: {
     flex: 1,
-  },
-  toggleTitle: {
     color: palette.text,
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 18,
     fontWeight: '700',
   },
-  toggleCaption: {
-    color: palette.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 6,
-  },
-  viewModeCard: {
-    borderRadius: 22,
-    padding: 14,
-    backgroundColor: palette.softCard,
-    gap: 12,
-  },
-  viewModeRow: {
-    gap: 6,
-  },
-  viewModeLabel: {
-    color: palette.faint,
-    fontSize: 11,
-    lineHeight: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  viewModeValue: {
-    color: palette.text,
-    fontSize: 15,
-    lineHeight: 21,
-    fontWeight: '600',
-  },
-  primaryButton: {
-    marginTop: 8,
-    borderRadius: 18,
-    paddingVertical: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    backgroundColor: palette.primary,
-  },
-  secondaryButton: {
-    marginTop: 10,
-    borderRadius: 18,
-    paddingVertical: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    backgroundColor: '#18263C',
-    borderWidth: 1,
-    borderColor: '#18263C',
-  },
-  buttonDisabled: {
-    opacity: 0.72,
-  },
-  primaryButtonText: {
-    color: '#F8FAFF',
-    fontSize: 15,
-    lineHeight: 18,
-    fontWeight: '800',
-  },
-  secondaryButtonText: {
-    color: '#F8FAFF',
+  leaderboardScore: {
+    color: palette.primary,
     fontSize: 15,
     lineHeight: 18,
     fontWeight: '800',

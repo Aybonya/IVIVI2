@@ -1,0 +1,22 @@
+Starting project at C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp
+React Compiler enabled
+Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.
+Starting Metro Bundler
+Waiting on http://localhost:8096
+Logs for your project will appear below.
+
+Metro error: The file ./(tabs)/routes.web.tsx does not have a fallback sibling file without a platform extension.
+
+  Error: The file ./(tabs)/routes.web.tsx does not have a fallback sibling file without a platform extension.
+    at getMostSpecific (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\getRoutesCore.ts:948:11)
+    at flattenDirectoryTreeToRoutes (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\getRoutesCore.ts:651:23)
+    at flattenDirectoryTreeToRoutes (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\getRoutesCore.ts:666:5)
+    at getRoutes (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\getRoutesCore.ts:93:20)
+    at getRoutes (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\getRoutesSSR.ts:19:23)
+    at getManifest (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-router\src\routes-manifest.ts:51:30)
+    at fetchManifest (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo\node_modules\@expo\cli\src\start\server\metro\fetchRouterManifest.ts:54:24)
+    at getRoutesManifest (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo\node_modules\@expo\cli\src\start\server\metro\createServerRouteMiddleware.ts:54:45)
+    at handler (C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-server\src\vendor\abstract.ts:75:24)
+    at C:\Users\alikhan\Documents\ivivi\ivivivivivi\IVIVI2\myApp\node_modules\expo-server\src\runtime\index.ts:83:53
+Web Bundled 939ms node_modules\expo-router\_error.js (323 modules)
+ LOG  [web] Logs will appear in the browser console

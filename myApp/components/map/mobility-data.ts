@@ -48,10 +48,10 @@ export const TRANSPORT_MODE_META: Record<
   },
 };
 
-export const ROUTE_MODES_BY_TRANSPORT: Record<TransportMode, RouteMode[]> = {
+export const ROUTE_MODES_BY_TRANSPORT = {
   Driving: ['Fastest', 'Eco', 'Safe'],
   Walking: ['Shortest', 'Safe', 'Accessible'],
-};
+} as const satisfies Record<TransportMode, readonly RouteMode[]>;
 
 export const ROUTE_MODE_META: Record<
   RouteMode,
